@@ -28,14 +28,21 @@ func runRulesConcurrently(rules []*base.RuleEntity, dc *gctx.DataContext, addRes
 
 	for _, r := range rules {
 		r := r
-		g.Go(func() error {
-			v, err, ok := r.Execute(dc)
+		g.Go(func() (err error) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					mu.Lock()
+					errs = append(errs, fmt.Errorf("rule %q panicked: %v", r.RuleName, rec))
+					mu.Unlock()
+				}
+			}()
+			v, execErr, ok := r.Execute(dc)
 			if ok {
 				addResult(r.RuleName, v)
 			}
-			if err != nil {
+			if execErr != nil {
 				mu.Lock()
-				errs = append(errs, fmt.Errorf("rule %q executed: %w", r.RuleName, err))
+				errs = append(errs, fmt.Errorf("rule %q executed: %w", r.RuleName, execErr))
 				mu.Unlock()
 			}
 			return nil

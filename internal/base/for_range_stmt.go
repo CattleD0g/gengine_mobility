@@ -31,7 +31,13 @@ func (forRangeStmt *ForRangeStmt) Evaluate(dc *context.DataContext, Vars map[str
 		return reflect.ValueOf(nil), errors.New(fmt.Sprintf("line %d, column %d, code: %s, %+v",
 			forRangeStmt.LineNum, forRangeStmt.Column, forRangeStmt.Code, e)), false
 	}
+	iCount := 0
 	for iterer.Next() {
+		iCount++
+		if iCount > maxExecuteNum {
+			return reflect.ValueOf(nil),
+				fmt.Errorf("execute forRange bigger than maxExecuteNum:%v", maxExecuteNum), false
+		}
 		key := iterer.Key()
 		err = dc.SetValue(Vars, forRangeStmt.keyName, key)
 		if err != nil {

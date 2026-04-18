@@ -31,7 +31,13 @@ func (g *Gengine) addResult(name string, returnResult interface{}) {
 }
 
 func (g *Gengine) GetRulesResultMap() (map[string]interface{}, error) {
-	return g.returnResult, nil
+	g.lock.Lock()
+	defer g.lock.Unlock()
+	out := make(map[string]interface{}, len(g.returnResult))
+	for k, v := range g.returnResult {
+		out[k] = v
+	}
+	return out, nil
 }
 
 /**
