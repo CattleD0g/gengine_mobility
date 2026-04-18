@@ -3,7 +3,7 @@ package engine
 import (
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"sync"
 
@@ -141,32 +141,11 @@ func (g *Gengine) ExecuteConcurrent(rb *builder.RuleBuilder) error {
 		return errors.New("no rule has been injected into engine! ")
 	}
 
-	var errLock sync.Mutex
-	var eMsg []string
-
-	var wg sync.WaitGroup
-	wg.Add(len(rb.Kc.RuleEntities))
+	rules := make([]*base.RuleEntity, 0, len(rb.Kc.RuleEntities))
 	for _, r := range rb.Kc.RuleEntities {
-		rr := r
-		go func() {
-			v, e, bx := rr.Execute(rb.Dc)
-			if bx {
-				g.addResult(rr.RuleName, v)
-			}
-			if e != nil {
-				errLock.Lock()
-				eMsg = append(eMsg, fmt.Sprintf("rule: \"%s\" executed, error:\n %+v ", rr.RuleName, e))
-				errLock.Unlock()
-			}
-			wg.Done()
-		}()
+		rules = append(rules, r)
 	}
-	wg.Wait()
-
-	if len(eMsg) > 0 {
-		return errors.New(fmt.Sprintf("%+v", eMsg))
-	}
-	return nil
+	return runRulesConcurrently(rules, rb.Dc, g.addResult)
 }
 
 /*
@@ -195,37 +174,10 @@ func (g *Gengine) ExecuteMixModel(rb *builder.RuleBuilder) error {
 	}
 
 	if e != nil {
-		return errors.New(fmt.Sprintf("the most high priority rule: \"%s\"  executed, error:\n %+v", rules[0].RuleName, e))
+		return fmt.Errorf("the most high priority rule: %q executed: %w", rules[0].RuleName, e)
 	}
 
-	var errLock sync.Mutex
-	var eMsg []string
-
-	if (len(rules) - 1) >= 1 {
-		var wg sync.WaitGroup
-		wg.Add(len(rules) - 1)
-		for _, r := range rules[1:] {
-			rr := r
-			go func() {
-				v, e, bx := rr.Execute(rb.Dc)
-				if bx {
-					g.addResult(rr.RuleName, v)
-				}
-				if e != nil {
-					errLock.Lock()
-					eMsg = append(eMsg, fmt.Sprintf("rule: \"%s\" executed, error:\n %+v ", rr.RuleName, e))
-					errLock.Unlock()
-				}
-				wg.Done()
-			}()
-		}
-		wg.Wait()
-	}
-
-	if len(eMsg) > 0 {
-		return errors.New(fmt.Sprintf("%+v", eMsg))
-	}
-	return nil
+	return runRulesConcurrently(rules[1:], rb.Dc, g.addResult)
 }
 
 /**
@@ -260,39 +212,13 @@ func (g *Gengine) ExecuteMixModelWithStopTagDirect(rb *builder.RuleBuilder, sTag
 		g.addResult(rules[0].RuleName, v)
 	}
 	if e != nil {
-		return errors.New(fmt.Sprintf("the most high priority rule: \"%s\"  executed, error:\n %+v", rules[0].RuleName, e))
+		return fmt.Errorf("the most high priority rule: %q executed: %w", rules[0].RuleName, e)
 	}
 
-	var errLock sync.Mutex
-	var eMsg []string
-
-	if !sTag.StopTag {
-		if (len(rules) - 1) >= 1 {
-			var wg sync.WaitGroup
-			wg.Add(len(rules) - 1)
-			for _, r := range rules[1:] {
-				rr := r
-				go func() {
-					v, e, bx := rr.Execute(rb.Dc)
-					if bx {
-						g.addResult(rr.RuleName, v)
-					}
-					if e != nil {
-						errLock.Lock()
-						eMsg = append(eMsg, fmt.Sprintf("rule: \"%s\" executed, error:\n %+v ", rr.RuleName, e))
-						errLock.Unlock()
-					}
-					wg.Done()
-				}()
-			}
-			wg.Wait()
-		}
+	if sTag.StopTag {
+		return nil
 	}
-
-	if len(eMsg) > 0 {
-		return errors.New(fmt.Sprintf("%+v", eMsg))
-	}
-	return nil
+	return runRulesConcurrently(rules[1:], rb.Dc, g.addResult)
 }
 
 /**
@@ -317,7 +243,7 @@ func (g *Gengine) ExecuteSelectedRules(rb *builder.RuleBuilder, names []string) 
 			rr := ruleEntity
 			rules = append(rules, rr)
 		} else {
-			log.Printf("no such rule named: \"%s\"", name)
+			slog.Warn("no such rule named", "name", name)
 		}
 	}
 
@@ -372,7 +298,7 @@ func (g *Gengine) ExecuteSelectedRulesWithControl(rb *builder.RuleBuilder, b boo
 			rr := ruleEntity
 			rules = append(rules, rr)
 		} else {
-			log.Printf("no such rule named: \"%s\"", name)
+			slog.Warn("no such rule named", "name", name)
 		}
 	}
 
@@ -433,7 +359,7 @@ func (g *Gengine) ExecuteSelectedRulesWithControlAsGivenSortedName(rb *builder.R
 			rr := ruleEntity
 			rules = append(rules, rr)
 		} else {
-			log.Printf("no such rule named: \"%s\"", name)
+			slog.Warn("no such rule named", "name", name)
 		}
 	}
 
@@ -486,7 +412,7 @@ func (g *Gengine) ExecuteSelectedRulesWithControlAndStopTag(rb *builder.RuleBuil
 			rr := ruleEntity
 			rules = append(rules, rr)
 		} else {
-			log.Printf("no such rule named: \"%s\"", name)
+			slog.Warn("no such rule named", "name", name)
 		}
 	}
 
@@ -551,7 +477,7 @@ func (g *Gengine) ExecuteSelectedRulesWithControlAndStopTagAsGivenSortedName(rb 
 			rr := ruleEntity
 			rules = append(rules, rr)
 		} else {
-			log.Printf("no such rule named: \"%s\"", name)
+			slog.Warn("no such rule named", "name", name)
 		}
 	}
 
@@ -607,7 +533,7 @@ func (g *Gengine) ExecuteSelectedRulesConcurrent(rb *builder.RuleBuilder, names 
 			rr := ruleEntity
 			rules = append(rules, rr)
 		} else {
-			log.Printf("no such rule named: \"%s\"", name)
+			slog.Warn("no such rule named", "name", name)
 		}
 	}
 
@@ -677,7 +603,7 @@ func (g *Gengine) ExecuteSelectedRulesMixModel(rb *builder.RuleBuilder, names []
 			rr := ruleEntity
 			rules = append(rules, rr)
 		} else {
-			log.Printf("no such rule named: \"%s\"", name)
+			slog.Warn("no such rule named", "name", name)
 		}
 	}
 
@@ -826,7 +752,7 @@ func (g *Gengine) ExecuteSelectedRulesInverseMixModel(rb *builder.RuleBuilder, n
 		if re, ok := rb.Kc.RuleEntities[name]; ok {
 			rules = append(rules, re)
 		} else {
-			log.Printf("no such rule named: \"%s\"", name)
+			slog.Warn("no such rule named", "name", name)
 		}
 	}
 
