@@ -10,13 +10,12 @@ import (
 	"github.com/bilibili/gengine/internal/base"
 	parser "github.com/bilibili/gengine/internal/iantlr/alr"
 
-	"github.com/antlr/antlr4/runtime/Go/antlr"
-	"github.com/golang-collections/collections/stack"
+	"github.com/antlr4-go/antlr/v4"
 )
 
 func NewGengineParserListener(ctx *base.KnowledgeContext) *GengineParserListener {
 	return &GengineParserListener{
-		Stack:            stack.New(),
+		Stack:            NewStack(),
 		ParseErrors:      make([]string, 0),
 		KnowledgeContext: ctx,
 	}
@@ -27,7 +26,7 @@ type GengineParserListener struct {
 	ParseErrors []string
 
 	KnowledgeContext *base.KnowledgeContext
-	Stack            *stack.Stack
+	Stack            *Stack
 	ruleName         string
 	ruleDescription  string
 	salience         int64

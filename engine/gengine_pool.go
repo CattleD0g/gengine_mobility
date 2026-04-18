@@ -1,18 +1,19 @@
 package engine
 
 import (
+	stdctx "context"
 	"errors"
 	"fmt"
-	"github.com/antlr/antlr4/runtime/Go/antlr"
+	"log"
+	"sync"
+
+	"github.com/antlr4-go/antlr/v4"
 	"github.com/bilibili/gengine/builder"
 	"github.com/bilibili/gengine/context"
 	"github.com/bilibili/gengine/internal/base"
 	parser "github.com/bilibili/gengine/internal/iantlr/alr"
 	"github.com/bilibili/gengine/internal/iparser"
 	"github.com/bilibili/gengine/internal/tool"
-	"sync"
-
-	"github.com/google/martian/log"
 )
 
 const (
@@ -531,23 +532,64 @@ func (gp *GenginePool) prepareWithMultiInput(data map[string]interface{}) (*geng
 		if k != "" && v != nil {
 			gw.rulebuilder.Dc.Add(k, v)
 		} else {
-			log.Errorf("injected null string key or nil value! ")
+			log.Printf("injected null string key or nil value! ")
 		}
 	}
 
 	return gw, nil
 }
 
-//execute rules as the user set execute model when init or update
-//req, it is better to be ptr, or you will not get changed data
-//resp, it is better to be ptr, or you will not get changed data
-// the return map[string]interface{} collection each rule returned result
-func (gp *GenginePool) ExecuteRulesWithSpecifiedEM(reqName string, req interface{}, respName string, resp interface{}) (error, map[string]interface{}) {
+// ============================================================================
+// GenginePool execution API. One primary ExecuteOpts method handles every
+// strategy and every option; the named Execute* variants are kept as thin
+// shims for source compatibility.
+// ============================================================================
 
+// ExecuteOpts acquires a worker from the pool, binds `data` to its
+// DataContext, runs the rule set as described by opts via
+// Gengine.ExecuteOpts, and returns the rule-result map. It is the single
+// primary execution entry point on GenginePool.
+func (gp *GenginePool) ExecuteOpts(ctx stdctx.Context, data map[string]interface{}, opts ExecOptions) (error, map[string]interface{}) {
 	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
 	if gp.clear {
-		//no data to execute rule
+		return nil, returnResultMap
+	}
+
+	gw, e := gp.prepareWithMultiInput(data)
+	if e != nil {
+		return e, returnResultMap
+	}
+	defer func() {
+		gw.clearInjected(getKeys(data)...)
+		gp.putGengineLocked(gw)
+	}()
+
+	e = gw.gengine.ExecuteOpts(ctx, gw.rulebuilder, opts)
+	returnResultMap, _ = gw.gengine.GetRulesResultMap()
+	return e, returnResultMap
+}
+
+// modelToMode maps the legacy pool-level model constants onto ExecMode so
+// the *WithSpecifiedEM dispatch methods can route through ExecuteOpts.
+func modelToMode(model int) ExecMode {
+	switch model {
+	case ConcurrentModel:
+		return ModeConcurrent
+	case MixModel:
+		return ModeMix
+	case InverseMixModel:
+		return ModeInverseMix
+	default:
+		return ModeSort
+	}
+}
+
+// ExecuteRulesWithSpecifiedEM runs the full rule set using the pool's
+// configured execution model (set via SetExecModel). req/resp are bound
+// as named values in the DataContext for the duration of the call.
+func (gp *GenginePool) ExecuteRulesWithSpecifiedEM(reqName string, req interface{}, respName string, resp interface{}) (error, map[string]interface{}) {
+	returnResultMap := make(map[string]interface{})
+	if gp.clear {
 		return nil, returnResultMap
 	}
 
@@ -555,660 +597,177 @@ func (gp *GenginePool) ExecuteRulesWithSpecifiedEM(reqName string, req interface
 	if e != nil {
 		return e, returnResultMap
 	}
-	//release resource
 	defer func() {
 		gw.rulebuilder.Dc.Del(reqName, respName)
 		gp.putGengineLocked(gw)
 	}()
 
-	if gp.execModel == SortModel { //sort
-		// when some rule execute error ,it will continue to execute last
-		e := gw.gengine.Execute(gw.rulebuilder, true)
-		returnResultMap, _ = gw.gengine.GetRulesResultMap()
-		return e, returnResultMap
+	opts := ExecOptions{Mode: modelToMode(gp.execModel)}
+	if opts.Mode == ModeSort {
+		opts.ContinueOnError = true
 	}
-
-	if gp.execModel == ConcurrentModel { //concurrent
-		e := gw.gengine.ExecuteConcurrent(gw.rulebuilder)
-		returnResultMap, _ = gw.gengine.GetRulesResultMap()
-		return e, returnResultMap
-	}
-
-	if gp.execModel == MixModel { //mix
-		e := gw.gengine.ExecuteMixModel(gw.rulebuilder)
-		returnResultMap, _ = gw.gengine.GetRulesResultMap()
-		return e, returnResultMap
-	}
-
-	if gp.execModel == InverseMixModel { // inverse mix model
-		e := gw.gengine.ExecuteInverseMixModel(gw.rulebuilder)
-		returnResultMap, _ = gw.gengine.GetRulesResultMap()
-		return e, returnResultMap
-	}
-
-	return nil, returnResultMap
+	e = gw.gengine.ExecuteOpts(stdctx.Background(), gw.rulebuilder, opts)
+	returnResultMap, _ = gw.gengine.GetRulesResultMap()
+	return e, returnResultMap
 }
 
-/**
-user can input more data to use in engine
-it is no difference with ExecuteRules, you just can inject more data use this api
-
-the return map[string]interface{} collection each rule returned result
-*/
+// ExecuteRulesWithMultiInputWithSpecifiedEM is ExecuteRulesWithSpecifiedEM
+// with an arbitrary name->value map instead of a single req/resp pair.
 func (gp *GenginePool) ExecuteRulesWithMultiInputWithSpecifiedEM(data map[string]interface{}) (error, map[string]interface{}) {
-
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
+	opts := ExecOptions{Mode: modelToMode(gp.execModel)}
+	if opts.Mode == ModeSort {
+		opts.ContinueOnError = true
 	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	if gp.execModel == SortModel { //sort
-		// when some rule execute error ,it will continue to execute last
-		e := gw.gengine.Execute(gw.rulebuilder, true)
-		returnResultMap, _ = gw.gengine.GetRulesResultMap()
-		return e, returnResultMap
-	}
-
-	if gp.execModel == ConcurrentModel { //concurrent
-		e := gw.gengine.ExecuteConcurrent(gw.rulebuilder)
-		returnResultMap, _ = gw.gengine.GetRulesResultMap()
-		return e, returnResultMap
-	}
-
-	if gp.execModel == MixModel { //mix
-		e := gw.gengine.ExecuteMixModel(gw.rulebuilder)
-		returnResultMap, _ = gw.gengine.GetRulesResultMap()
-		return e, returnResultMap
-	}
-
-	if gp.execModel == InverseMixModel { // inverse mix model
-		e := gw.gengine.ExecuteInverseMixModel(gw.rulebuilder)
-		returnResultMap, _ = gw.gengine.GetRulesResultMap()
-		return e, returnResultMap
-	}
-
-	return nil, returnResultMap
-
+	return gp.ExecuteOpts(stdctx.Background(), data, opts)
 }
 
-/***
-this make user could use exemodel to control the select-exemodel
-
-the return map[string]interface{} collection each rule returned result
-*/
+// ExecuteSelectedWithSpecifiedEM runs only the named rules using the pool's
+// configured execution model.
 func (gp *GenginePool) ExecuteSelectedWithSpecifiedEM(data map[string]interface{}, names []string) (error, map[string]interface{}) {
-
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
+	opts := ExecOptions{Mode: modelToMode(gp.execModel), Selected: names}
+	if opts.Mode == ModeSort {
+		opts.ContinueOnError = true
 	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	if gp.execModel == SortModel {
-		e = gw.gengine.ExecuteSelectedRules(gw.rulebuilder, names)
-		returnResultMap, _ = gw.gengine.GetRulesResultMap()
-		return e, returnResultMap
-	}
-
-	if gp.execModel == ConcurrentModel {
-		e = gw.gengine.ExecuteSelectedRulesConcurrent(gw.rulebuilder, names)
-		returnResultMap, _ = gw.gengine.GetRulesResultMap()
-		return e, returnResultMap
-	}
-
-	if gp.execModel == MixModel {
-		e = gw.gengine.ExecuteSelectedRulesMixModel(gw.rulebuilder, names)
-		returnResultMap, _ = gw.gengine.GetRulesResultMap()
-		return e, returnResultMap
-	}
-
-	if gp.execModel == InverseMixModel {
-		e = gw.gengine.ExecuteSelectedRulesInverseMixModel(gw.rulebuilder, names)
-		returnResultMap, _ = gw.gengine.GetRulesResultMap()
-		return e, returnResultMap
-	}
-
-	return nil, returnResultMap
+	return gp.ExecuteOpts(stdctx.Background(), data, opts)
 }
 
-// see gengine.go  Execute
+// ============================================================================
+// Context-aware API. Prefer in new code.
+// ============================================================================
+
+func (gp *GenginePool) ExecuteContext(ctx stdctx.Context, data map[string]interface{}, b bool) (error, map[string]interface{}) {
+	return gp.ExecuteOpts(ctx, data, ExecOptions{Mode: ModeSort, ContinueOnError: b})
+}
+
+func (gp *GenginePool) ExecuteWithStopTagContext(ctx stdctx.Context, data map[string]interface{}, b bool, sTag *Stag) (error, map[string]interface{}) {
+	return gp.ExecuteOpts(ctx, data, ExecOptions{Mode: ModeSort, ContinueOnError: b, StopTag: sTag})
+}
+
+func (gp *GenginePool) ExecuteConcurrentContext(ctx stdctx.Context, data map[string]interface{}) (error, map[string]interface{}) {
+	return gp.ExecuteOpts(ctx, data, ExecOptions{Mode: ModeConcurrent})
+}
+
+func (gp *GenginePool) ExecuteMixModelContext(ctx stdctx.Context, data map[string]interface{}) (error, map[string]interface{}) {
+	return gp.ExecuteOpts(ctx, data, ExecOptions{Mode: ModeMix})
+}
+
+func (gp *GenginePool) ExecuteMixModelWithStopTagContext(ctx stdctx.Context, data map[string]interface{}, sTag *Stag) (error, map[string]interface{}) {
+	return gp.ExecuteOpts(ctx, data, ExecOptions{Mode: ModeMix, StopTag: sTag})
+}
+
+func (gp *GenginePool) ExecuteDAGModelContext(ctx stdctx.Context, dag [][]string, data map[string]interface{}) (error, map[string]interface{}) {
+	return gp.ExecuteOpts(ctx, data, ExecOptions{Mode: ModeDAG, DAG: dag})
+}
+
+// ============================================================================
+// Legacy API. Deprecated: prefer ExecuteOpts or the *Context variants.
+// ============================================================================
+
+// Execute — Deprecated: use ExecuteContext or ExecuteOpts.
 func (gp *GenginePool) Execute(data map[string]interface{}, b bool) (error, map[string]interface{}) {
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.Execute(gw.rulebuilder, b)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeSort, ContinueOnError: b})
 }
 
-// se gengine.go ExecuteWithStopTagDirect
+// ExecuteWithStopTagDirect — Deprecated: use ExecuteWithStopTagContext.
 func (gp *GenginePool) ExecuteWithStopTagDirect(data map[string]interface{}, b bool, sTag *Stag) (error, map[string]interface{}) {
-
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteWithStopTagDirect(gw.rulebuilder, b, sTag)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeSort, ContinueOnError: b, StopTag: sTag})
 }
 
-//see gengine.go ExecuteConcurrent
+// ExecuteConcurrent — Deprecated: use ExecuteConcurrentContext.
 func (gp *GenginePool) ExecuteConcurrent(data map[string]interface{}) (error, map[string]interface{}) {
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteConcurrent(gw.rulebuilder)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeConcurrent})
 }
 
-// see gengine.go  ExecuteMixModel
+// ExecuteMixModel — Deprecated: use ExecuteMixModelContext.
 func (gp *GenginePool) ExecuteMixModel(data map[string]interface{}) (error, map[string]interface{}) {
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteMixModel(gw.rulebuilder)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeMix})
 }
 
-//see gengine.go ExecuteMixModelWithStopTagDirect
+// ExecuteMixModelWithStopTagDirect — Deprecated: use ExecuteMixModelWithStopTagContext.
 func (gp *GenginePool) ExecuteMixModelWithStopTagDirect(data map[string]interface{}, sTag *Stag) (error, map[string]interface{}) {
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteMixModelWithStopTagDirect(gw.rulebuilder, sTag)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
-
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeMix, StopTag: sTag})
 }
 
-// see gengine.go  ExecuteSelectedRules
+// ExecuteSelectedRules — Deprecated: use ExecuteOpts with Selected + ContinueOnError.
 func (gp *GenginePool) ExecuteSelectedRules(data map[string]interface{}, names []string) (error, map[string]interface{}) {
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteSelectedRules(gw.rulebuilder, names)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeSort, Selected: names, ContinueOnError: true})
 }
 
-//see gengine.go ExecuteSelectedRulesWithControl
+// ExecuteSelectedRulesWithControl — Deprecated: use ExecuteOpts.
 func (gp *GenginePool) ExecuteSelectedRulesWithControl(data map[string]interface{}, b bool, names []string) (error, map[string]interface{}) {
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteSelectedRulesWithControl(gw.rulebuilder, b, names)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeSort, Selected: names, ContinueOnError: b})
 }
 
-//see gengine.go ExecuteSelectedRulesWithControlAsGivenSortedName
+// ExecuteSelectedRulesWithControlAsGivenSortedName — Deprecated: use ExecuteOpts with PreserveOrder.
 func (gp *GenginePool) ExecuteSelectedRulesWithControlAsGivenSortedName(data map[string]interface{}, b bool, sortedNames []string) (error, map[string]interface{}) {
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteSelectedRulesWithControlAsGivenSortedName(gw.rulebuilder, b, sortedNames)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeSort, Selected: sortedNames, PreserveOrder: true, ContinueOnError: b})
 }
 
-//see gengine.go ExecuteSelectedRulesWithControlAndStopTag
+// ExecuteSelectedRulesWithControlAndStopTag — Deprecated: use ExecuteOpts.
 func (gp *GenginePool) ExecuteSelectedRulesWithControlAndStopTag(data map[string]interface{}, b bool, sTag *Stag, names []string) (error, map[string]interface{}) {
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteSelectedRulesWithControlAndStopTag(gw.rulebuilder, b, sTag, names)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeSort, Selected: names, ContinueOnError: b, StopTag: sTag})
 }
 
-//see gengine.go ExecuteSelectedRulesWithControlAndStopTagAsGivenSortedName
+// ExecuteSelectedRulesWithControlAndStopTagAsGivenSortedName — Deprecated: use ExecuteOpts.
 func (gp *GenginePool) ExecuteSelectedRulesWithControlAndStopTagAsGivenSortedName(data map[string]interface{}, b bool, sTag *Stag, sortedNames []string) (error, map[string]interface{}) {
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteSelectedRulesWithControlAndStopTagAsGivenSortedName(gw.rulebuilder, b, sTag, sortedNames)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeSort, Selected: sortedNames, PreserveOrder: true, ContinueOnError: b, StopTag: sTag})
 }
 
-//see gengine.go ExecuteSelectedRulesConcurrent
+// ExecuteSelectedRulesConcurrent — Deprecated: use ExecuteOpts.
 func (gp *GenginePool) ExecuteSelectedRulesConcurrent(data map[string]interface{}, names []string) (error, map[string]interface{}) {
-
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteSelectedRulesConcurrent(gw.rulebuilder, names)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeConcurrent, Selected: names})
 }
 
-//see gengine.go ExecuteSelectedRulesMixModel
+// ExecuteSelectedRulesMixModel — Deprecated: use ExecuteOpts.
 func (gp *GenginePool) ExecuteSelectedRulesMixModel(data map[string]interface{}, names []string) (error, map[string]interface{}) {
-
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteSelectedRulesMixModel(gw.rulebuilder, names)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
-
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeMix, Selected: names})
 }
 
-// //see gengine.go ExecuteInverseMixModel
+// ExecuteInverseMixModel — Deprecated: use ExecuteOpts.
 func (gp *GenginePool) ExecuteInverseMixModel(data map[string]interface{}) (error, map[string]interface{}) {
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteInverseMixModel(gw.rulebuilder)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
-
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeInverseMix})
 }
 
-//see gengine.go ExecuteSelectedRulesInverseMixModel
+// ExecuteSelectedRulesInverseMixModel — Deprecated: use ExecuteOpts.
 func (gp *GenginePool) ExecuteSelectedRulesInverseMixModel(data map[string]interface{}, names []string) (error, map[string]interface{}) {
-
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteSelectedRulesInverseMixModel(gw.rulebuilder, names)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeInverseMix, Selected: names})
 }
 
-// see gengine.go  ExecuteNSortMConcurrent
+// ExecuteNSortMConcurrent — Deprecated: use ExecuteOpts.
 func (gp *GenginePool) ExecuteNSortMConcurrent(nSort, mConcurrent int, b bool, data map[string]interface{}) (error, map[string]interface{}) {
-
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteNSortMConcurrent(nSort, mConcurrent, gw.rulebuilder, b)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeNSortMConcurrent, N: nSort, M: mConcurrent, ContinueOnError: b})
 }
 
-// see gengine.go ExecuteNConcurrentMSort
-func (gp *GenginePool) ExecuteNConcurrentMSort(nSort, mConcurrent int, b bool, data map[string]interface{}) (error, map[string]interface{}) {
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteNConcurrentMSort(nSort, mConcurrent, gw.rulebuilder, b)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
+// ExecuteNConcurrentMSort — Deprecated: use ExecuteOpts.
+func (gp *GenginePool) ExecuteNConcurrentMSort(nConcurrent, mSort int, b bool, data map[string]interface{}) (error, map[string]interface{}) {
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeNConcurrentMSort, N: nConcurrent, M: mSort, ContinueOnError: b})
 }
 
-//see gengine.go ExecuteNConcurrentMConcurrent
-func (gp *GenginePool) ExecuteNConcurrentMConcurrent(nSort, mConcurrent int, b bool, data map[string]interface{}) (error, map[string]interface{}) {
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteNConcurrentMConcurrent(nSort, mConcurrent, gw.rulebuilder, b)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
-
+// ExecuteNConcurrentMConcurrent — Deprecated: use ExecuteOpts.
+func (gp *GenginePool) ExecuteNConcurrentMConcurrent(nConcurrent, mConcurrent int, b bool, data map[string]interface{}) (error, map[string]interface{}) {
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeNConcurrentMConcurrent, N: nConcurrent, M: mConcurrent, ContinueOnError: b})
 }
 
-// see  gengine.go ExecuteSelectedNSortMConcurrent
+// ExecuteSelectedNSortMConcurrent — Deprecated: use ExecuteOpts.
 func (gp *GenginePool) ExecuteSelectedNSortMConcurrent(nSort, mConcurrent int, b bool, names []string, data map[string]interface{}) (error, map[string]interface{}) {
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteSelectedNSortMConcurrent(nSort, mConcurrent, gw.rulebuilder, b, names)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeNSortMConcurrent, N: nSort, M: mConcurrent, ContinueOnError: b, Selected: names})
 }
 
-// see gengine.go ExecuteSelectedNConcurrentMSort
-func (gp *GenginePool) ExecuteSelectedNConcurrentMSort(nSort, mConcurrent int, b bool, names []string, data map[string]interface{}) (error, map[string]interface{}) {
-
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteSelectedNConcurrentMSort(nSort, mConcurrent, gw.rulebuilder, b, names)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
+// ExecuteSelectedNConcurrentMSort — Deprecated: use ExecuteOpts.
+func (gp *GenginePool) ExecuteSelectedNConcurrentMSort(nConcurrent, mSort int, b bool, names []string, data map[string]interface{}) (error, map[string]interface{}) {
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeNConcurrentMSort, N: nConcurrent, M: mSort, ContinueOnError: b, Selected: names})
 }
 
-// see gengine.go ExecuteSelectedNConcurrentMConcurrent
-func (gp *GenginePool) ExecuteSelectedNConcurrentMConcurrent(nSort, mConcurrent int, b bool, names []string, data map[string]interface{}) (error, map[string]interface{}) {
-
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteSelectedNConcurrentMConcurrent(nSort, mConcurrent, gw.rulebuilder, b, names)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
+// ExecuteSelectedNConcurrentMConcurrent — Deprecated: use ExecuteOpts.
+func (gp *GenginePool) ExecuteSelectedNConcurrentMConcurrent(nConcurrent, mConcurrent int, b bool, names []string, data map[string]interface{}) (error, map[string]interface{}) {
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeNConcurrentMConcurrent, N: nConcurrent, M: mConcurrent, ContinueOnError: b, Selected: names})
 }
 
-// see gengine.go ExecuteDAGModel
+// ExecuteDAGModel — Deprecated: use ExecuteDAGModelContext.
 func (gp *GenginePool) ExecuteDAGModel(dag [][]string, data map[string]interface{}) (error, map[string]interface{}) {
-
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteDAGModel(gw.rulebuilder, dag)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
+	return gp.ExecuteOpts(stdctx.Background(), data, ExecOptions{Mode: ModeDAG, DAG: dag})
 }
+
 
 func getKeys(data map[string]interface{}) []string {
 	var keys []string

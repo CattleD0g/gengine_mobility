@@ -233,6 +233,9 @@ func ParamsTypeChange(f reflect.Value, params []reflect.Value) []reflect.Value {
 		switch tf.In(i).Kind() {
 		case reflect.Int:
 			tag := getNumType(params[i])
+			if tag == _unknown {
+				continue
+			}
 			if tag == _int {
 				params[i] = reflect.ValueOf(int(params[i].Int()))
 			} else if tag == _uint {
@@ -243,6 +246,9 @@ func ParamsTypeChange(f reflect.Value, params []reflect.Value) []reflect.Value {
 			break
 		case reflect.Int8:
 			tag := getNumType(params[i])
+			if tag == _unknown {
+				continue
+			}
 			if tag == _int {
 				params[i] = reflect.ValueOf(int8(params[i].Int()))
 			} else if tag == _uint {
@@ -253,6 +259,9 @@ func ParamsTypeChange(f reflect.Value, params []reflect.Value) []reflect.Value {
 			break
 		case reflect.Int16:
 			tag := getNumType(params[i])
+			if tag == _unknown {
+				continue
+			}
 			if tag == _int {
 				params[i] = reflect.ValueOf(int16(params[i].Int()))
 			} else if tag == _uint {
@@ -263,6 +272,9 @@ func ParamsTypeChange(f reflect.Value, params []reflect.Value) []reflect.Value {
 			break
 		case reflect.Int32:
 			tag := getNumType(params[i])
+			if tag == _unknown {
+				continue
+			}
 			if tag == _int {
 				params[i] = reflect.ValueOf(int32(params[i].Int()))
 			} else if tag == _uint {
@@ -273,6 +285,9 @@ func ParamsTypeChange(f reflect.Value, params []reflect.Value) []reflect.Value {
 			break
 		case reflect.Int64:
 			tag := getNumType(params[i])
+			if tag == _unknown {
+				continue
+			}
 			if tag == _int {
 				params[i] = reflect.ValueOf(params[i].Int())
 			} else if tag == _uint {
@@ -283,6 +298,9 @@ func ParamsTypeChange(f reflect.Value, params []reflect.Value) []reflect.Value {
 			break
 		case reflect.Uint:
 			tag := getNumType(params[i])
+			if tag == _unknown {
+				continue
+			}
 			if tag == _int {
 				params[i] = reflect.ValueOf(uint(params[i].Int()))
 			} else if tag == _uint {
@@ -293,6 +311,9 @@ func ParamsTypeChange(f reflect.Value, params []reflect.Value) []reflect.Value {
 			break
 		case reflect.Uint8:
 			tag := getNumType(params[i])
+			if tag == _unknown {
+				continue
+			}
 			if tag == _int {
 				params[i] = reflect.ValueOf(uint8(params[i].Int()))
 			} else if tag == _uint {
@@ -303,6 +324,9 @@ func ParamsTypeChange(f reflect.Value, params []reflect.Value) []reflect.Value {
 			break
 		case reflect.Uint16:
 			tag := getNumType(params[i])
+			if tag == _unknown {
+				continue
+			}
 			if tag == _int {
 				params[i] = reflect.ValueOf(uint16(params[i].Int()))
 			} else if tag == _uint {
@@ -313,6 +337,9 @@ func ParamsTypeChange(f reflect.Value, params []reflect.Value) []reflect.Value {
 			break
 		case reflect.Uint32:
 			tag := getNumType(params[i])
+			if tag == _unknown {
+				continue
+			}
 			if tag == _int {
 				params[i] = reflect.ValueOf(uint32(params[i].Int()))
 			} else if tag == _uint {
@@ -323,6 +350,9 @@ func ParamsTypeChange(f reflect.Value, params []reflect.Value) []reflect.Value {
 			break
 		case reflect.Uint64:
 			tag := getNumType(params[i])
+			if tag == _unknown {
+				continue
+			}
 			if tag == _int {
 				params[i] = reflect.ValueOf(uint64(params[i].Int()))
 			} else if tag == _uint {
@@ -333,6 +363,9 @@ func ParamsTypeChange(f reflect.Value, params []reflect.Value) []reflect.Value {
 			break
 		case reflect.Float32:
 			tag := getNumType(params[i])
+			if tag == _unknown {
+				continue
+			}
 			if tag == _int {
 				params[i] = reflect.ValueOf(float32(params[i].Int()))
 			} else if tag == _uint {
@@ -343,6 +376,9 @@ func ParamsTypeChange(f reflect.Value, params []reflect.Value) []reflect.Value {
 			break
 		case reflect.Float64:
 			tag := getNumType(params[i])
+			if tag == _unknown {
+				continue
+			}
 			if tag == _int {
 				params[i] = reflect.ValueOf(float64(params[i].Int()))
 			} else if tag == _uint {
@@ -364,6 +400,12 @@ func ParamsTypeChange(f reflect.Value, params []reflect.Value) []reflect.Value {
 	return params
 }
 
+// _unknown is returned by getNumType when the value's kind is not a numeric
+// kind. Callers must treat _unknown as "leave the parameter as-is"; surfacing
+// the mismatch is the job of the downstream reflect.Call, which produces a
+// normal error instead of panicking.
+const _unknown = -1
+
 func getNumType(param reflect.Value) int {
 	ts := param.Kind().String()
 	if strings.HasPrefix(ts, "int") {
@@ -378,7 +420,7 @@ func getNumType(param reflect.Value) int {
 		return _float
 	}
 
-	panic(fmt.Sprintf("it is not number type, type is %s !", ts))
+	return _unknown
 }
 
 func GetWantedValue(newValue reflect.Value, toKind reflect.Type) (reflect.Value, error) {

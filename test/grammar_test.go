@@ -7,7 +7,7 @@ import (
 	"github.com/bilibili/gengine/internal/base"
 	parser "github.com/bilibili/gengine/internal/iantlr/alr"
 	"github.com/bilibili/gengine/internal/iparser"
-	"github.com/antlr/antlr4/runtime/Go/antlr"
+	"github.com/antlr4-go/antlr/v4"
 	"testing"
 )
 

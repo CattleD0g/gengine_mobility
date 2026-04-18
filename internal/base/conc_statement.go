@@ -3,9 +3,10 @@ package base
 import (
 	"errors"
 	"fmt"
-	"github.com/bilibili/gengine/context"
 	"reflect"
 	"sync"
+
+	"github.com/bilibili/gengine/context"
 )
 
 type ConcStatement struct {
@@ -35,6 +36,24 @@ func (cs *ConcStatement) AcceptThreeLevelCall(threeLevelCall *ThreeLevelCall) er
 	return nil
 }
 
+// safeCall runs fn under a panic recovery guard so that user-registered
+// callables panicking in a conc {} block cannot take down the embedder. Any
+// panic or returned error is appended to eMsg via errLock.
+func safeCall(errLock *sync.Mutex, eMsg *[]string, label string, fn func() error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			errLock.Lock()
+			*eMsg = append(*eMsg, fmt.Sprintf("%s panicked: %v", label, rec))
+			errLock.Unlock()
+		}
+	}()
+	if err := fn(); err != nil {
+		errLock.Lock()
+		*eMsg = append(*eMsg, fmt.Sprintf("%+v", err))
+		errLock.Unlock()
+	}
+}
+
 func (cs *ConcStatement) Evaluate(dc *context.DataContext, Vars map[string]reflect.Value) (reflect.Value, error) {
 
 	aLen := len(cs.Assignments)
@@ -44,77 +63,62 @@ func (cs *ConcStatement) Evaluate(dc *context.DataContext, Vars map[string]refle
 	l := aLen + fLen + mLen + tLen
 	if l <= 0 {
 		return reflect.ValueOf(nil), nil
-	} else {
+	}
 
-		var errLock sync.Mutex
-		var eMsg []string
+	var errLock sync.Mutex
+	var eMsg []string
 
-		var wg sync.WaitGroup
-		wg.Add(l)
+	var wg sync.WaitGroup
+	wg.Add(l)
+
+	for _, assign := range cs.Assignments {
+		assignment := assign
 		go func() {
-			for _, assign := range cs.Assignments {
-				assignment := assign
-				go func() {
-					_, e := assignment.Evaluate(dc, Vars)
-					if e != nil {
-						errLock.Lock()
-						eMsg = append(eMsg, fmt.Sprintf("%+v", e))
-						errLock.Unlock()
-					}
-					wg.Done()
-				}()
-			}
+			defer wg.Done()
+			safeCall(&errLock, &eMsg, "assignment", func() error {
+				_, e := assignment.Evaluate(dc, Vars)
+				return e
+			})
 		}()
+	}
 
+	for _, fu := range cs.FunctionCalls {
+		fun := fu
 		go func() {
-			for _, fu := range cs.FunctionCalls {
-				fun := fu
-				go func() {
-					_, e := fun.Evaluate(dc, Vars)
-					if e != nil {
-						errLock.Lock()
-						eMsg = append(eMsg, fmt.Sprintf("%+v", e))
-						errLock.Unlock()
-					}
-					wg.Done()
-				}()
-			}
+			defer wg.Done()
+			safeCall(&errLock, &eMsg, "functionCall", func() error {
+				_, e := fun.Evaluate(dc, Vars)
+				return e
+			})
 		}()
+	}
+
+	for _, me := range cs.MethodCalls {
+		meth := me
 		go func() {
-			for _, me := range cs.MethodCalls {
-				meth := me
-				go func() {
-					_, e := meth.Evaluate(dc, Vars)
-					if e != nil {
-						errLock.Lock()
-						eMsg = append(eMsg, fmt.Sprintf("%+v", e))
-						errLock.Unlock()
-					}
-					wg.Done()
-				}()
-			}
+			defer wg.Done()
+			safeCall(&errLock, &eMsg, "methodCall", func() error {
+				_, e := meth.Evaluate(dc, Vars)
+				return e
+			})
 		}()
+	}
 
+	for _, c := range cs.ThreeLevelCalls {
+		tlc := c
 		go func() {
-			for _, c := range cs.ThreeLevelCalls {
-				tlc := c
-				go func() {
-					_, e := tlc.Evaluate(dc, Vars)
-					if e != nil {
-						errLock.Lock()
-						eMsg = append(eMsg, fmt.Sprintf("%+v", e))
-						errLock.Unlock()
-					}
-					wg.Done()
-				}()
-			}
+			defer wg.Done()
+			safeCall(&errLock, &eMsg, "threeLevelCall", func() error {
+				_, e := tlc.Evaluate(dc, Vars)
+				return e
+			})
 		}()
+	}
 
-		wg.Wait()
+	wg.Wait()
 
-		if len(eMsg) > 0 {
-			return reflect.ValueOf(nil), errors.New(fmt.Sprintf("%+v", eMsg))
-		}
+	if len(eMsg) > 0 {
+		return reflect.ValueOf(nil), errors.New(fmt.Sprintf("%+v", eMsg))
 	}
 	return reflect.ValueOf(nil), nil
 }

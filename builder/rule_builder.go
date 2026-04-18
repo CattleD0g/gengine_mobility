@@ -3,7 +3,7 @@ package builder
 import (
 	"errors"
 	"fmt"
-	"github.com/antlr/antlr4/runtime/Go/antlr"
+	"github.com/antlr4-go/antlr/v4"
 	"github.com/bilibili/gengine/context"
 	"github.com/bilibili/gengine/internal/base"
 	parser "github.com/bilibili/gengine/internal/iantlr/alr"
@@ -14,19 +14,57 @@ import (
 	"sync"
 )
 
+// DefaultMaxRuleLength is the default cap (in bytes) on a single rule string
+// accepted by BuildRuleFromString / BuildRuleWithIncremental. Callers that
+// accept rules from untrusted sources should keep or lower it; callers that
+// legitimately need larger rules can override via SetMaxRuleLength.
+const DefaultMaxRuleLength = 1 << 20 // 1 MiB
+
 type RuleBuilder struct {
 	Kc *base.KnowledgeContext
 	Dc *context.DataContext
 
 	buildLock sync.Mutex
+
+	// maxRuleLength caps the size of a rule string to defend against
+	// parser memory exhaustion. Zero means unlimited; NewRuleBuilder
+	// sets it to DefaultMaxRuleLength.
+	maxRuleLength int
 }
 
 func NewRuleBuilder(dc *context.DataContext) *RuleBuilder {
 	kc := base.NewKnowledgeContext()
 	return &RuleBuilder{
-		Kc: kc,
-		Dc: dc,
+		Kc:            kc,
+		Dc:            dc,
+		maxRuleLength: DefaultMaxRuleLength,
 	}
+}
+
+// SetMaxRuleLength overrides the maximum accepted rule string size in bytes.
+// A value <= 0 disables the check (NOT RECOMMENDED for untrusted input).
+func (builder *RuleBuilder) SetMaxRuleLength(n int) {
+	builder.buildLock.Lock()
+	defer builder.buildLock.Unlock()
+	builder.maxRuleLength = n
+}
+
+// MaxRuleLength returns the currently configured maximum rule string size.
+func (builder *RuleBuilder) MaxRuleLength() int {
+	builder.buildLock.Lock()
+	defer builder.buildLock.Unlock()
+	return builder.maxRuleLength
+}
+
+func (builder *RuleBuilder) checkRuleString(ruleString, label string) error {
+	if strings.TrimSpace(ruleString) == "" {
+		return fmt.Errorf("%s: rule string is empty", label)
+	}
+	if builder.maxRuleLength > 0 && len(ruleString) > builder.maxRuleLength {
+		return fmt.Errorf("%s: rule string is %d bytes, exceeds max %d; call SetMaxRuleLength to override",
+			label, len(ruleString), builder.maxRuleLength)
+	}
+	return nil
 }
 
 //chinese comment :全量更新
@@ -35,9 +73,8 @@ func (builder *RuleBuilder) BuildRuleFromString(ruleString string) error {
 	builder.buildLock.Lock()
 	defer builder.buildLock.Unlock()
 
-	if strings.TrimSpace(ruleString) == "" {
-		//nil ruleString check
-		return errors.New(fmt.Sprintf("inject ruleString is %s", ruleString))
+	if err := builder.checkRuleString(ruleString, "BuildRuleFromString"); err != nil {
+		return err
 	}
 
 	kc := base.NewKnowledgeContext()
@@ -91,13 +128,11 @@ func (builder *RuleBuilder) BuildRuleFromString(ruleString string) error {
 // if a rule doesn't exist, this method will add the new rule to the existed rules list
 // in detail: copy from old -> update the copy -> use the updated copy to replace old
 func (builder *RuleBuilder) BuildRuleWithIncremental(ruleString string) error {
-	//make sure incremental update is thread safety!
 	builder.buildLock.Lock()
 	defer builder.buildLock.Unlock()
 
-	if strings.TrimSpace(ruleString) == "" {
-		//nil ruleString check
-		return errors.New(fmt.Sprintf("incremental inject ruleString is %s", ruleString))
+	if err := builder.checkRuleString(ruleString, "BuildRuleWithIncremental"); err != nil {
+		return err
 	}
 
 	in := antlr.NewInputStream(ruleString)

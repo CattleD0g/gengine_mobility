@@ -1,0 +1,66 @@
+version: "2"
+
+run:
+  timeout: 5m
+  go: "1.22"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gocritic
+    - gosec
+    - misspell
+    - unconvert
+    - unparam
+    - bodyclose
+    - errorlint
+    - prealloc
+    - revive
+
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+    gosec:
+      excludes:
+        - G115
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+
+  exclusions:
+    generated: lax
+    rules:
+      - path: internal/iantlr/alr/
+        linters:
+          - errcheck
+          - govet
+          - ineffassign
+          - staticcheck
+          - unused
+          - gocritic
+          - gosec
+          - unconvert
+          - unparam
+          - revive
+          - misspell
+      - path: _test\.go$
+        linters:
+          - gosec
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - internal/iantlr/alr
