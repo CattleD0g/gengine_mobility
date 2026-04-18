@@ -3,16 +3,16 @@ package engine
 import (
 	"errors"
 	"fmt"
-	"github.com/antlr/antlr4/runtime/Go/antlr"
+	"log"
+	"sync"
+
+	"github.com/antlr4-go/antlr/v4"
 	"github.com/bilibili/gengine/builder"
 	"github.com/bilibili/gengine/context"
 	"github.com/bilibili/gengine/internal/base"
 	parser "github.com/bilibili/gengine/internal/iantlr/alr"
 	"github.com/bilibili/gengine/internal/iparser"
 	"github.com/bilibili/gengine/internal/tool"
-	"sync"
-
-	"github.com/google/martian/log"
 )
 
 const (
@@ -531,7 +531,7 @@ func (gp *GenginePool) prepareWithMultiInput(data map[string]interface{}) (*geng
 		if k != "" && v != nil {
 			gw.rulebuilder.Dc.Add(k, v)
 		} else {
-			log.Errorf("injected null string key or nil value! ")
+			log.Printf("injected null string key or nil value! ")
 		}
 	}
 

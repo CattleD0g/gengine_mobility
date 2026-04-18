@@ -3,12 +3,12 @@ package engine
 import (
 	"errors"
 	"fmt"
-	"github.com/bilibili/gengine/builder"
-	"github.com/bilibili/gengine/internal/base"
+	"log"
 	"sort"
 	"sync"
 
-	"github.com/google/martian/log"
+	"github.com/bilibili/gengine/builder"
+	"github.com/bilibili/gengine/internal/base"
 )
 
 type Gengine struct {
@@ -317,7 +317,7 @@ func (g *Gengine) ExecuteSelectedRules(rb *builder.RuleBuilder, names []string) 
 			rr := ruleEntity
 			rules = append(rules, rr)
 		} else {
-			log.Errorf("no such rule named: \"%s\"", name)
+			log.Printf("no such rule named: \"%s\"", name)
 		}
 	}
 
@@ -372,7 +372,7 @@ func (g *Gengine) ExecuteSelectedRulesWithControl(rb *builder.RuleBuilder, b boo
 			rr := ruleEntity
 			rules = append(rules, rr)
 		} else {
-			log.Errorf("no such rule named: \"%s\"", name)
+			log.Printf("no such rule named: \"%s\"", name)
 		}
 	}
 
@@ -433,7 +433,7 @@ func (g *Gengine) ExecuteSelectedRulesWithControlAsGivenSortedName(rb *builder.R
 			rr := ruleEntity
 			rules = append(rules, rr)
 		} else {
-			log.Errorf("no such rule named: \"%s\"", name)
+			log.Printf("no such rule named: \"%s\"", name)
 		}
 	}
 
@@ -486,7 +486,7 @@ func (g *Gengine) ExecuteSelectedRulesWithControlAndStopTag(rb *builder.RuleBuil
 			rr := ruleEntity
 			rules = append(rules, rr)
 		} else {
-			log.Errorf("no such rule named: \"%s\"", name)
+			log.Printf("no such rule named: \"%s\"", name)
 		}
 	}
 
@@ -551,7 +551,7 @@ func (g *Gengine) ExecuteSelectedRulesWithControlAndStopTagAsGivenSortedName(rb 
 			rr := ruleEntity
 			rules = append(rules, rr)
 		} else {
-			log.Errorf("no such rule named: \"%s\"", name)
+			log.Printf("no such rule named: \"%s\"", name)
 		}
 	}
 
@@ -607,7 +607,7 @@ func (g *Gengine) ExecuteSelectedRulesConcurrent(rb *builder.RuleBuilder, names 
 			rr := ruleEntity
 			rules = append(rules, rr)
 		} else {
-			log.Errorf("no such rule named: \"%s\"", name)
+			log.Printf("no such rule named: \"%s\"", name)
 		}
 	}
 
@@ -677,7 +677,7 @@ func (g *Gengine) ExecuteSelectedRulesMixModel(rb *builder.RuleBuilder, names []
 			rr := ruleEntity
 			rules = append(rules, rr)
 		} else {
-			log.Errorf("no such rule named: \"%s\"", name)
+			log.Printf("no such rule named: \"%s\"", name)
 		}
 	}
 
@@ -826,7 +826,7 @@ func (g *Gengine) ExecuteSelectedRulesInverseMixModel(rb *builder.RuleBuilder, n
 		if re, ok := rb.Kc.RuleEntities[name]; ok {
 			rules = append(rules, re)
 		} else {
-			log.Errorf("no such rule named: \"%s\"", name)
+			log.Printf("no such rule named: \"%s\"", name)
 		}
 	}
 
