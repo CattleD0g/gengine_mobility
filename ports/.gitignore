@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# Java
+target/
+*.class
+.idea/
+
+# C++
+build/
+*.o
+*.obj
