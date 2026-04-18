@@ -1,6 +1,7 @@
 package engine
 
 import (
+	stdctx "context"
 	"errors"
 	"fmt"
 	"log"
@@ -694,12 +695,39 @@ func (gp *GenginePool) ExecuteSelectedWithSpecifiedEM(data map[string]interface{
 	return nil, returnResultMap
 }
 
-// see gengine.go  Execute
+// ExecuteContext is ctx-aware Execute; see Gengine.ExecuteContext.
+func (gp *GenginePool) ExecuteContext(ctx stdctx.Context, data map[string]interface{}, b bool) (error, map[string]interface{}) {
+	returnResultMap := make(map[string]interface{})
+	if gp.clear {
+		return nil, returnResultMap
+	}
+
+	gw, e := gp.prepareWithMultiInput(data)
+	if e != nil {
+		return e, returnResultMap
+	}
+	defer func() {
+		gw.clearInjected(getKeys(data)...)
+		gp.putGengineLocked(gw)
+	}()
+
+	e = gw.gengine.ExecuteContext(ctx, gw.rulebuilder, b)
+	returnResultMap, _ = gw.gengine.GetRulesResultMap()
+	return e, returnResultMap
+}
+
+// Execute is a legacy shim for ExecuteContext.
+//
+// Deprecated: prefer ExecuteContext.
 func (gp *GenginePool) Execute(data map[string]interface{}, b bool) (error, map[string]interface{}) {
+	return gp.ExecuteContext(stdctx.Background(), data, b)
+}
+
+// ExecuteWithStopTagContext is ctx-aware ExecuteWithStopTagDirect;
+// see Gengine.ExecuteWithStopTagContext.
+func (gp *GenginePool) ExecuteWithStopTagContext(ctx stdctx.Context, data map[string]interface{}, b bool, sTag *Stag) (error, map[string]interface{}) {
 	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
 	if gp.clear {
-		//no data to execute rule
 		return nil, returnResultMap
 	}
 
@@ -707,24 +735,28 @@ func (gp *GenginePool) Execute(data map[string]interface{}, b bool) (error, map[
 	if e != nil {
 		return e, returnResultMap
 	}
-	//release resource
 	defer func() {
 		gw.clearInjected(getKeys(data)...)
 		gp.putGengineLocked(gw)
 	}()
 
-	e = gw.gengine.Execute(gw.rulebuilder, b)
+	e = gw.gengine.ExecuteWithStopTagContext(ctx, gw.rulebuilder, b, sTag)
 	returnResultMap, _ = gw.gengine.GetRulesResultMap()
 	return e, returnResultMap
 }
 
-// se gengine.go ExecuteWithStopTagDirect
+// ExecuteWithStopTagDirect is a legacy shim for ExecuteWithStopTagContext.
+//
+// Deprecated: prefer ExecuteWithStopTagContext.
 func (gp *GenginePool) ExecuteWithStopTagDirect(data map[string]interface{}, b bool, sTag *Stag) (error, map[string]interface{}) {
+	return gp.ExecuteWithStopTagContext(stdctx.Background(), data, b, sTag)
+}
 
+// ExecuteConcurrentContext is ctx-aware ExecuteConcurrent;
+// see Gengine.ExecuteConcurrentContext.
+func (gp *GenginePool) ExecuteConcurrentContext(ctx stdctx.Context, data map[string]interface{}) (error, map[string]interface{}) {
 	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
 	if gp.clear {
-		//no data to execute rule
 		return nil, returnResultMap
 	}
 
@@ -732,23 +764,28 @@ func (gp *GenginePool) ExecuteWithStopTagDirect(data map[string]interface{}, b b
 	if e != nil {
 		return e, returnResultMap
 	}
-	//release resource
 	defer func() {
 		gw.clearInjected(getKeys(data)...)
 		gp.putGengineLocked(gw)
 	}()
 
-	e = gw.gengine.ExecuteWithStopTagDirect(gw.rulebuilder, b, sTag)
+	e = gw.gengine.ExecuteConcurrentContext(ctx, gw.rulebuilder)
 	returnResultMap, _ = gw.gengine.GetRulesResultMap()
 	return e, returnResultMap
 }
 
-//see gengine.go ExecuteConcurrent
+// ExecuteConcurrent is a legacy shim for ExecuteConcurrentContext.
+//
+// Deprecated: prefer ExecuteConcurrentContext.
 func (gp *GenginePool) ExecuteConcurrent(data map[string]interface{}) (error, map[string]interface{}) {
+	return gp.ExecuteConcurrentContext(stdctx.Background(), data)
+}
+
+// ExecuteMixModelContext is ctx-aware ExecuteMixModel;
+// see Gengine.ExecuteMixModelContext.
+func (gp *GenginePool) ExecuteMixModelContext(ctx stdctx.Context, data map[string]interface{}) (error, map[string]interface{}) {
 	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
 	if gp.clear {
-		//no data to execute rule
 		return nil, returnResultMap
 	}
 
@@ -756,23 +793,28 @@ func (gp *GenginePool) ExecuteConcurrent(data map[string]interface{}) (error, ma
 	if e != nil {
 		return e, returnResultMap
 	}
-	//release resource
 	defer func() {
 		gw.clearInjected(getKeys(data)...)
 		gp.putGengineLocked(gw)
 	}()
 
-	e = gw.gengine.ExecuteConcurrent(gw.rulebuilder)
+	e = gw.gengine.ExecuteMixModelContext(ctx, gw.rulebuilder)
 	returnResultMap, _ = gw.gengine.GetRulesResultMap()
 	return e, returnResultMap
 }
 
-// see gengine.go  ExecuteMixModel
+// ExecuteMixModel is a legacy shim for ExecuteMixModelContext.
+//
+// Deprecated: prefer ExecuteMixModelContext.
 func (gp *GenginePool) ExecuteMixModel(data map[string]interface{}) (error, map[string]interface{}) {
+	return gp.ExecuteMixModelContext(stdctx.Background(), data)
+}
+
+// ExecuteMixModelWithStopTagContext is ctx-aware ExecuteMixModelWithStopTagDirect;
+// see Gengine.ExecuteMixModelWithStopTagContext.
+func (gp *GenginePool) ExecuteMixModelWithStopTagContext(ctx stdctx.Context, data map[string]interface{}, sTag *Stag) (error, map[string]interface{}) {
 	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
 	if gp.clear {
-		//no data to execute rule
 		return nil, returnResultMap
 	}
 
@@ -780,40 +822,22 @@ func (gp *GenginePool) ExecuteMixModel(data map[string]interface{}) (error, map[
 	if e != nil {
 		return e, returnResultMap
 	}
-	//release resource
 	defer func() {
 		gw.clearInjected(getKeys(data)...)
 		gp.putGengineLocked(gw)
 	}()
 
-	e = gw.gengine.ExecuteMixModel(gw.rulebuilder)
+	e = gw.gengine.ExecuteMixModelWithStopTagContext(ctx, gw.rulebuilder, sTag)
 	returnResultMap, _ = gw.gengine.GetRulesResultMap()
 	return e, returnResultMap
 }
 
-//see gengine.go ExecuteMixModelWithStopTagDirect
+// ExecuteMixModelWithStopTagDirect is a legacy shim for
+// ExecuteMixModelWithStopTagContext.
+//
+// Deprecated: prefer ExecuteMixModelWithStopTagContext.
 func (gp *GenginePool) ExecuteMixModelWithStopTagDirect(data map[string]interface{}, sTag *Stag) (error, map[string]interface{}) {
-	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
-	if gp.clear {
-		//no data to execute rule
-		return nil, returnResultMap
-	}
-
-	gw, e := gp.prepareWithMultiInput(data)
-	if e != nil {
-		return e, returnResultMap
-	}
-	//release resource
-	defer func() {
-		gw.clearInjected(getKeys(data)...)
-		gp.putGengineLocked(gw)
-	}()
-
-	e = gw.gengine.ExecuteMixModelWithStopTagDirect(gw.rulebuilder, sTag)
-	returnResultMap, _ = gw.gengine.GetRulesResultMap()
-	return e, returnResultMap
-
+	return gp.ExecuteMixModelWithStopTagContext(stdctx.Background(), data, sTag)
 }
 
 // see gengine.go  ExecuteSelectedRules
@@ -1185,13 +1209,11 @@ func (gp *GenginePool) ExecuteSelectedNConcurrentMConcurrent(nSort, mConcurrent 
 	return e, returnResultMap
 }
 
-// see gengine.go ExecuteDAGModel
-func (gp *GenginePool) ExecuteDAGModel(dag [][]string, data map[string]interface{}) (error, map[string]interface{}) {
-
+// ExecuteDAGModelContext is ctx-aware ExecuteDAGModel;
+// see Gengine.ExecuteDAGModelContext.
+func (gp *GenginePool) ExecuteDAGModelContext(ctx stdctx.Context, dag [][]string, data map[string]interface{}) (error, map[string]interface{}) {
 	returnResultMap := make(map[string]interface{})
-	//rules has bean cleared
 	if gp.clear {
-		//no data to execute rule
 		return nil, returnResultMap
 	}
 
@@ -1199,15 +1221,21 @@ func (gp *GenginePool) ExecuteDAGModel(dag [][]string, data map[string]interface
 	if e != nil {
 		return e, returnResultMap
 	}
-	//release resource
 	defer func() {
 		gw.clearInjected(getKeys(data)...)
 		gp.putGengineLocked(gw)
 	}()
 
-	e = gw.gengine.ExecuteDAGModel(gw.rulebuilder, dag)
+	e = gw.gengine.ExecuteDAGModelContext(ctx, gw.rulebuilder, dag)
 	returnResultMap, _ = gw.gengine.GetRulesResultMap()
 	return e, returnResultMap
+}
+
+// ExecuteDAGModel is a legacy shim for ExecuteDAGModelContext.
+//
+// Deprecated: prefer ExecuteDAGModelContext.
+func (gp *GenginePool) ExecuteDAGModel(dag [][]string, data map[string]interface{}) (error, map[string]interface{}) {
+	return gp.ExecuteDAGModelContext(stdctx.Background(), dag, data)
 }
 
 func getKeys(data map[string]interface{}) []string {

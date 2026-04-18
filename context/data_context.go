@@ -49,32 +49,50 @@ func (dc *DataContext) Del(keys ...string) {
 	}
 }
 
-//plugin_exportName_apiName.so
-// _ is a separator
-//plugin is prefix
-//exportName is user export in plugin file
-//apiName is plugin used in gengine
+// PluginLoader loads a Go plugin (.so) and registers the symbol it exports
+// so rules can call it. The expected filename pattern is
+//
+//	plugin_<exportName>_<apiName>.so
+//
+// SECURITY: plugin.Open() executes arbitrary Go code in the host process
+// with full host privileges; Go plugins cannot be sandboxed. Never pass a
+// path derived from untrusted input to this function. If you need dynamic
+// plugin loading in a hostile environment, keep .so files under an
+// operator-managed directory with no write access for attackers.
+//
+// This method now rejects the obvious abuse paths before calling
+// plugin.Open: non-absolute paths, paths containing ".." after cleaning,
+// wrong extension, and filenames that do not match the required pattern.
 func (dc *DataContext) PluginLoader(absolutePathOfSO string) (string, plugin.Symbol, error) {
+	if absolutePathOfSO == "" {
+		return "", nil, errors.New("PluginLoader: path is empty")
+	}
 
-	plg, err := plugin.Open(absolutePathOfSO)
+	clean := filepath.Clean(absolutePathOfSO)
+	if !filepath.IsAbs(clean) {
+		return "", nil, fmt.Errorf("PluginLoader: %q is not an absolute path", absolutePathOfSO)
+	}
+	for _, part := range strings.Split(clean, string(filepath.Separator)) {
+		if part == ".." {
+			return "", nil, fmt.Errorf("PluginLoader: %q contains parent-directory traversal", absolutePathOfSO)
+		}
+	}
+
+	_, file := filepath.Split(clean)
+	if path.Ext(file) != ".so" {
+		return "", nil, fmt.Errorf("PluginLoader: %q is not a .so plugin file", absolutePathOfSO)
+	}
+	fileWithOutExt := strings.TrimSuffix(file, ".so")
+	splits := strings.Split(fileWithOutExt, "_")
+	if len(splits) != 3 || splits[0] != "plugin" || splits[1] == "" || splits[2] == "" {
+		return "", nil, fmt.Errorf("PluginLoader: filename %q does not match plugin_<export>_<api>.so", file)
+	}
+	exportName, apiName := splits[1], splits[2]
+
+	plg, err := plugin.Open(clean)
 	if err != nil {
 		return "", nil, err
 	}
-
-	_, file := filepath.Split(absolutePathOfSO)
-	if path.Ext(file) != ".so" {
-		return "", nil, errors.New(fmt.Sprintf("%s is not a plugin file", absolutePathOfSO))
-	}
-
-	fileWithOutExt := strings.ReplaceAll(file, ".so", "")
-
-	splits := strings.Split(fileWithOutExt, "_")
-	if len(splits) != 3 || !strings.HasPrefix(file, "plugin_") {
-		return "", nil, errors.New(fmt.Sprintf("the plugin file name(%s) is not fit for need! ", absolutePathOfSO))
-	}
-
-	exportName := splits[1]
-	apiName := splits[2]
 
 	exportApi, err := plg.Lookup(exportName)
 	if err != nil {
@@ -83,7 +101,6 @@ func (dc *DataContext) PluginLoader(absolutePathOfSO string) (string, plugin.Sym
 
 	dc.lockBase.Lock()
 	defer dc.lockBase.Unlock()
-
 	dc.base[apiName] = reflect.ValueOf(exportApi)
 	return apiName, exportApi, nil
 }

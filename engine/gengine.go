@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -40,16 +41,17 @@ func (g *Gengine) GetRulesResultMap() (map[string]interface{}, error) {
 	return out, nil
 }
 
-/**
-sort execute model
-
-when b is true it means when there are many rules， if one rule execute error，continue to execute rules after the occur error rule
-*/
-func (g *Gengine) Execute(rb *builder.RuleBuilder, b bool) error {
-
-	//check rb
+// ExecuteContext runs the rule set in sort (salience) order. If continueOnErr
+// is true, execution carries on past failing rules and all errors are joined
+// in the returned error; otherwise it stops at the first failure. ctx is
+// checked between rules so a cancellation / deadline interrupts execution
+// promptly.
+func (g *Gengine) ExecuteContext(ctx context.Context, rb *builder.RuleBuilder, continueOnErr bool) error {
 	if rb == nil {
 		return errors.New("ruleBuilder is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	g.returnResult = make(map[string]interface{})
@@ -60,16 +62,20 @@ func (g *Gengine) Execute(rb *builder.RuleBuilder, b bool) error {
 
 	var eMsg []string
 	for _, r := range rb.Kc.SortRules {
+		if err := ctx.Err(); err != nil {
+			eMsg = append(eMsg, err.Error())
+			break
+		}
 		v, err, bx := r.Execute(rb.Dc)
 		if bx {
 			g.addResult(r.RuleName, v)
 		}
 
 		if err != nil {
-			if b {
-				eMsg = append(eMsg, fmt.Sprintf("rule: \"%s\" executed, error:\n %+v ", r.RuleName, err))
+			if continueOnErr {
+				eMsg = append(eMsg, fmt.Sprintf("rule: %q executed, error: %+v", r.RuleName, err))
 			} else {
-				return errors.New(fmt.Sprintf("rule: \"%s\" executed, error:\n %+v ", r.RuleName, err))
+				return fmt.Errorf("rule: %q executed: %w", r.RuleName, err)
 			}
 		}
 	}
@@ -78,6 +84,14 @@ func (g *Gengine) Execute(rb *builder.RuleBuilder, b bool) error {
 		return errors.New(fmt.Sprintf("%+v", eMsg))
 	}
 	return nil
+}
+
+// Execute is a legacy shim for ExecuteContext; it passes context.Background().
+//
+// Deprecated: prefer ExecuteContext so callers can cancel or time-bound
+// execution of untrusted rules.
+func (g *Gengine) Execute(rb *builder.RuleBuilder, b bool) error {
+	return g.ExecuteContext(context.Background(), rb, b)
 }
 
 /**
@@ -91,11 +105,18 @@ sTag is a struct given by user, and user can use it  to control rules execute be
 it used in this scene:
 where some high priority rules execute finished, you don't want to execute to the last rules, you can use sTag to control it out of gengine
 */
-func (g *Gengine) ExecuteWithStopTagDirect(rb *builder.RuleBuilder, b bool, sTag *Stag) error {
-
-	//check rb
+// ExecuteWithStopTagContext is ExecuteContext with an additional user-owned
+// stop tag; setting sTag.StopTag=true from inside a rule terminates the loop
+// early without cancelling the whole context.
+func (g *Gengine) ExecuteWithStopTagContext(ctx context.Context, rb *builder.RuleBuilder, continueOnErr bool, sTag *Stag) error {
 	if rb == nil {
 		return errors.New("ruleBuilder is nil")
+	}
+	if sTag == nil {
+		return errors.New("sTag is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	g.returnResult = make(map[string]interface{})
@@ -106,15 +127,19 @@ func (g *Gengine) ExecuteWithStopTagDirect(rb *builder.RuleBuilder, b bool, sTag
 
 	var eMsg []string
 	for _, r := range rb.Kc.SortRules {
+		if err := ctx.Err(); err != nil {
+			eMsg = append(eMsg, err.Error())
+			break
+		}
 		v, err, bx := r.Execute(rb.Dc)
 		if bx {
 			g.addResult(r.RuleName, v)
 		}
 		if err != nil {
-			if b {
-				eMsg = append(eMsg, fmt.Sprintf("rule: \"%s\" executed, error:\n %+v ", r.RuleName, err))
+			if continueOnErr {
+				eMsg = append(eMsg, fmt.Sprintf("rule: %q executed, error: %+v", r.RuleName, err))
 			} else {
-				return errors.New(fmt.Sprintf("rule: \"%s\" executed, error:\n %+v ", r.RuleName, err))
+				return fmt.Errorf("rule: %q executed: %w", r.RuleName, err)
 			}
 		}
 
@@ -130,13 +155,18 @@ func (g *Gengine) ExecuteWithStopTagDirect(rb *builder.RuleBuilder, b bool, sTag
 	return nil
 }
 
-/*
- concurrent execute model
- in this mode, it will not consider the priority  and not consider err control
-*/
-func (g *Gengine) ExecuteConcurrent(rb *builder.RuleBuilder) error {
+// ExecuteWithStopTagDirect is a legacy shim for ExecuteWithStopTagContext.
+//
+// Deprecated: prefer ExecuteWithStopTagContext.
+func (g *Gengine) ExecuteWithStopTagDirect(rb *builder.RuleBuilder, b bool, sTag *Stag) error {
+	return g.ExecuteWithStopTagContext(context.Background(), rb, b, sTag)
+}
 
-	//check rb
+// ExecuteConcurrentContext runs all rules in parallel, ignoring salience.
+// Errors from individual rules are collected (not fail-fast). Panics inside
+// rules are recovered and reported as rule errors. ctx cancellation stops
+// launching new rules and is surfaced in the returned error.
+func (g *Gengine) ExecuteConcurrentContext(ctx context.Context, rb *builder.RuleBuilder) error {
 	if rb == nil {
 		return errors.New("ruleBuilder is nil")
 	}
@@ -151,7 +181,14 @@ func (g *Gengine) ExecuteConcurrent(rb *builder.RuleBuilder) error {
 	for _, r := range rb.Kc.RuleEntities {
 		rules = append(rules, r)
 	}
-	return runRulesConcurrently(rules, rb.Dc, g.addResult)
+	return runRulesConcurrently(ctx, rules, rb.Dc, g.addResult)
+}
+
+// ExecuteConcurrent is a legacy shim for ExecuteConcurrentContext.
+//
+// Deprecated: prefer ExecuteConcurrentContext.
+func (g *Gengine) ExecuteConcurrent(rb *builder.RuleBuilder) error {
+	return g.ExecuteConcurrentContext(context.Background(), rb)
 }
 
 /*
@@ -160,17 +197,25 @@ func (g *Gengine) ExecuteConcurrent(rb *builder.RuleBuilder) error {
  in this mode, it will not consider the priority，and it also concurrently to execute rules
  first to execute the most high priority rule，then concurrently to execute last rules without consider the priority
 */
-func (g *Gengine) ExecuteMixModel(rb *builder.RuleBuilder) error {
-
-	//check rb
+// ExecuteMixModelContext runs the highest-salience rule first (serially), then
+// fans the remaining rules out concurrently. ctx cancellation applies to both
+// phases.
+func (g *Gengine) ExecuteMixModelContext(ctx context.Context, rb *builder.RuleBuilder) error {
 	if rb == nil {
 		return errors.New("ruleBuilder is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	g.returnResult = make(map[string]interface{})
 
 	if len(rb.Kc.SortRules) == 0 {
 		return errors.New("no rule has been injected into engine! ")
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	rules := rb.Kc.SortRules
@@ -183,7 +228,14 @@ func (g *Gengine) ExecuteMixModel(rb *builder.RuleBuilder) error {
 		return fmt.Errorf("the most high priority rule: %q executed: %w", rules[0].RuleName, e)
 	}
 
-	return runRulesConcurrently(rules[1:], rb.Dc, g.addResult)
+	return runRulesConcurrently(ctx, rules[1:], rb.Dc, g.addResult)
+}
+
+// ExecuteMixModel is a legacy shim for ExecuteMixModelContext.
+//
+// Deprecated: prefer ExecuteMixModelContext.
+func (g *Gengine) ExecuteMixModel(rb *builder.RuleBuilder) error {
+	return g.ExecuteMixModelContext(context.Background(), rb)
 }
 
 /**
@@ -199,17 +251,28 @@ it used in this scene:
 where the first rule execute finished, you don't want to execute to the last rules, you can use sTag to control it out of gengine
 
 */
-func (g *Gengine) ExecuteMixModelWithStopTagDirect(rb *builder.RuleBuilder, sTag *Stag) error {
-
-	//check rb
+// ExecuteMixModelWithStopTagContext is ExecuteMixModelContext with a user-
+// owned stop tag; if sTag.StopTag becomes true after the first rule, the
+// concurrent phase is skipped.
+func (g *Gengine) ExecuteMixModelWithStopTagContext(ctx context.Context, rb *builder.RuleBuilder, sTag *Stag) error {
 	if rb == nil {
 		return errors.New("ruleBuilder is nil")
+	}
+	if sTag == nil {
+		return errors.New("sTag is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	g.returnResult = make(map[string]interface{})
 
 	if len(rb.Kc.SortRules) == 0 {
 		return errors.New("no rule has been injected into engine! ")
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	rules := rb.Kc.SortRules
@@ -224,7 +287,15 @@ func (g *Gengine) ExecuteMixModelWithStopTagDirect(rb *builder.RuleBuilder, sTag
 	if sTag.StopTag {
 		return nil
 	}
-	return runRulesConcurrently(rules[1:], rb.Dc, g.addResult)
+	return runRulesConcurrently(ctx, rules[1:], rb.Dc, g.addResult)
+}
+
+// ExecuteMixModelWithStopTagDirect is a legacy shim for
+// ExecuteMixModelWithStopTagContext.
+//
+// Deprecated: prefer ExecuteMixModelWithStopTagContext.
+func (g *Gengine) ExecuteMixModelWithStopTagDirect(rb *builder.RuleBuilder, sTag *Stag) error {
+	return g.ExecuteMixModelWithStopTagContext(context.Background(), rb, sTag)
 }
 
 /**
@@ -1350,57 +1421,43 @@ func (g *Gengine) ExecuteSelectedNConcurrentMConcurrent(nConcurrent, mConcurrent
 }
 
 //DAG model
-func (g *Gengine) ExecuteDAGModel(rb *builder.RuleBuilder, dag [][]string) error {
-
-	//check rb
+// ExecuteDAGModelContext runs rules organised as a DAG: dag is a slice of
+// rows, where each row is executed concurrently and rows execute in order.
+// Execution stops at the first row that produces errors; ctx cancellation is
+// honoured between rows and surfaced as an error on the returned join.
+func (g *Gengine) ExecuteDAGModelContext(ctx context.Context, rb *builder.RuleBuilder, dag [][]string) error {
 	if rb == nil {
 		return errors.New("ruleBuilder is nil")
 	}
-
-	//check params
 	if len(dag) == 0 {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
-	var errLock sync.Mutex
-	var eMsg []string
-
-	//row
 	for i := 0; i < len(dag); i++ {
-		//col
-		var rules []*base.RuleEntity
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		rules := make([]*base.RuleEntity, 0, len(dag[i]))
 		for j := 0; j < len(dag[i]); j++ {
-			//filter the rules which do not exist.
 			if rule, ok := rb.Kc.RuleEntities[dag[i][j]]; ok {
 				rules = append(rules, rule)
 			}
 		}
 
-		//并发执行
-		if len(rules) > 0 {
-			var mwg sync.WaitGroup
-			mwg.Add(len(rules))
-			for _, r := range rules {
-				rr := r
-				go func() {
-					v, e, bx := rr.Execute(rb.Dc)
-					if bx {
-						g.addResult(rr.RuleName, v)
-					}
-					if e != nil {
-						errLock.Lock()
-						eMsg = append(eMsg, fmt.Sprintf("rule: \"%s\" executed, error:\n %+v ", rr.RuleName, e))
-						errLock.Unlock()
-					}
-					mwg.Done()
-				}()
-			}
-			mwg.Wait()
+		if err := runRulesConcurrently(ctx, rules, rb.Dc, g.addResult); err != nil {
+			return err
 		}
-		if len(eMsg) > 0 {
-			return errors.New(fmt.Sprintf("%+v", eMsg))
-		}
-
 	}
 	return nil
+}
+
+// ExecuteDAGModel is a legacy shim for ExecuteDAGModelContext.
+//
+// Deprecated: prefer ExecuteDAGModelContext.
+func (g *Gengine) ExecuteDAGModel(rb *builder.RuleBuilder, dag [][]string) error {
+	return g.ExecuteDAGModelContext(context.Background(), rb, dag)
 }
